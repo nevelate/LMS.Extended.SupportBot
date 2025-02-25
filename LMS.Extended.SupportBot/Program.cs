@@ -1,10 +1,7 @@
-﻿namespace LMS.Extended.SupportBot
-{
-    internal class Program
-    {
-        static void Main(string[] args)
-        {
-            Console.WriteLine("Hello, World!");
-        }
-    }
-}
+using LMS.Extended.SupportBot;
+
+var builder = Host.CreateApplicationBuilder(args);
+builder.Services.AddHostedService<Worker>();
+
+var host = builder.Build();
+host.Run();
