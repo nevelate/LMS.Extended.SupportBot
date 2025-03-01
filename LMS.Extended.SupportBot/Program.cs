@@ -22,7 +22,7 @@ IHost host = Host.CreateDefaultBuilder(args)
                 });
 
         services.AddScoped<UpdateHandler>();
-        services.AddScoped<ReceiverService>();
+        services.AddScoped<IReceiverService, ReceiverService>();
         services.AddHostedService<PollingService>();
     })
     .Build();

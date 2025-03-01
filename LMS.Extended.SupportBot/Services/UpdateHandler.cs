@@ -1,4 +1,5 @@
-﻿using System;
+﻿using Microsoft.Extensions.Options;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
@@ -13,9 +14,10 @@ using Telegram.Bot.Types.ReplyMarkups;
 
 namespace LMS.Extended.SupportBot.Services
 {
-    public class UpdateHandler(ITelegramBotClient bot, ILogger<UpdateHandler> logger) : IUpdateHandler
+    public class UpdateHandler(ITelegramBotClient bot, IOptions<BotConfiguration> options, ILogger<UpdateHandler> logger) : IUpdateHandler
     {
-        private static readonly InputPollOption[] PollOptions = ["Hello", "World!"];
+        private readonly long adminId = options.Value.AdminId;
+        private ReplyKeyboardMarkup keyboard = new ReplyKeyboardMarkup("LMS Extended on Google Play", "About") { ResizeKeyboard = true };
 
         public async Task HandleErrorAsync(ITelegramBotClient botClient, Exception exception, HandleErrorSource source, CancellationToken cancellationToken)
         {
@@ -31,16 +33,6 @@ namespace LMS.Extended.SupportBot.Services
             await (update switch
             {
                 { Message: { } message } => OnMessage(message),
-                { EditedMessage: { } message } => OnMessage(message),
-                { CallbackQuery: { } callbackQuery } => OnCallbackQuery(callbackQuery),
-                { InlineQuery: { } inlineQuery } => OnInlineQuery(inlineQuery),
-                { ChosenInlineResult: { } chosenInlineResult } => OnChosenInlineResult(chosenInlineResult),
-                { Poll: { } poll } => OnPoll(poll),
-                { PollAnswer: { } pollAnswer } => OnPollAnswer(pollAnswer),
-                // UpdateType.ChannelPost:
-                // UpdateType.EditedChannelPost:
-                // UpdateType.ShippingQuery:
-                // UpdateType.PreCheckoutQuery:
                 _ => UnknownUpdateHandlerAsync(update)
             });
         }
@@ -51,142 +43,43 @@ namespace LMS.Extended.SupportBot.Services
             if (msg.Text is not { } messageText)
                 return;
 
-            Message sentMessage = await (messageText.Split(' ')[0] switch
+            await (messageText switch
             {
-                "/photo" => SendPhoto(msg),
-                "/inline_buttons" => SendInlineKeyboard(msg),
-                "/keyboard" => SendReplyKeyboard(msg),
-                "/remove" => RemoveKeyboard(msg),
-                "/request" => RequestContactAndLocation(msg),
-                "/inline_mode" => StartInlineQuery(msg),
-                "/poll" => SendPoll(msg),
-                "/poll_anonymous" => SendAnonymousPoll(msg),
-                "/throw" => FailingHandler(msg),
-                _ => Usage(msg)
+                "/start" => SendStartMessage(msg),
+                "LMS Extended on Google Play" => bot.SendMessage(msg.Chat, "https://play.google.com/store/apps/details?id=com.nevelate.lmse", replyMarkup: keyboard),
+                "About" => SendAbout(msg),
+                _ => SendMessage(msg)
             });
-            logger.LogInformation("The message was sent with id: {SentMessageId}", sentMessage.Id);
         }
 
-        async Task<Message> Usage(Message msg)
+        async Task SendMessage(Message msg)
         {
-            const string usage = """
-                <b><u>Bot menu</u></b>:
-                /photo          - send a photo
-                /inline_buttons - send inline buttons
-                /keyboard       - send keyboard buttons
-                /remove         - remove keyboard buttons
-                /request        - request location or contact
-                /inline_mode    - send inline-mode results list
-                /poll           - send a poll
-                /poll_anonymous - send an anonymous poll
-                /throw          - what happens if handler fails
+            if (msg.Chat.Id == adminId)
+            {
+                if (msg.ReplyToMessage != null && msg.ReplyToMessage.Chat.Id != adminId)
+                    await bot.CopyMessage(msg.ReplyToMessage.ForwardFromChat.Id, adminId, msg.Id);
+            }
+            else
+            {
+                await bot.ForwardMessage(adminId, msg.Chat.Id, msg.Id);
+                await bot.SendMessage(msg.Chat, "Your message has been sent to the administrator. You will receive a response soon.", replyMarkup: keyboard);
+            }
+        }
+
+        async Task SendStartMessage(Message msg)
+        {
+            if (msg.Chat.Id == adminId) await bot.SendMessage(msg.Chat, "Welcome admin!", replyMarkup: keyboard);
+            else await bot.SendMessage(msg.Chat, "Welcome to **LMS Extended Support Bot**\\! Official support bot of [LMS Extended](https://play.google.com/store/apps/details?id=com.nevelate.lmse)\\. Here you can send suggestions, questions and bug reports", parseMode: ParseMode.MarkdownV2, replyMarkup: keyboard);
+        }
+
+        async Task SendAbout(Message msg)
+        {
+            const string about = """
+              <b>About:</b>
+              LMS Extended Support Bot by <a href="https://github.com/nevelate">nevelate</a>
+              Source code - <a href="https://github.com/nevelate/LMS.Extended.SupportBot">LMS.Extended.SupportBot</a>
             """;
-            return await bot.SendMessage(msg.Chat, usage, parseMode: ParseMode.Html, replyMarkup: new ReplyKeyboardRemove());
-        }
-
-        async Task<Message> SendPhoto(Message msg)
-        {
-            await bot.SendChatAction(msg.Chat, ChatAction.UploadPhoto);
-            await Task.Delay(2000); // simulate a long task
-            await using var fileStream = new FileStream("Files/bot.gif", FileMode.Open, FileAccess.Read);
-            return await bot.SendPhoto(msg.Chat, fileStream, caption: "Read https://telegrambots.github.io/book/");
-        }
-
-        // Send inline keyboard. You can process responses in OnCallbackQuery handler
-        async Task<Message> SendInlineKeyboard(Message msg)
-        {
-            var inlineMarkup = new InlineKeyboardMarkup()
-                .AddNewRow("1.1", "1.2", "1.3")
-                .AddNewRow()
-                    .AddButton("WithCallbackData", "CallbackData")
-                    .AddButton(InlineKeyboardButton.WithUrl("WithUrl", "https://github.com/TelegramBots/Telegram.Bot"));
-            return await bot.SendMessage(msg.Chat, "Inline buttons:", replyMarkup: inlineMarkup);
-        }
-
-        async Task<Message> SendReplyKeyboard(Message msg)
-        {
-            var replyMarkup = new ReplyKeyboardMarkup(true)
-                .AddNewRow("1.1", "1.2", "1.3")
-                .AddNewRow().AddButton("2.1").AddButton("2.2");
-            return await bot.SendMessage(msg.Chat, "Keyboard buttons:", replyMarkup: replyMarkup);
-        }
-
-        async Task<Message> RemoveKeyboard(Message msg)
-        {
-            return await bot.SendMessage(msg.Chat, "Removing keyboard", replyMarkup: new ReplyKeyboardRemove());
-        }
-
-        async Task<Message> RequestContactAndLocation(Message msg)
-        {
-            var replyMarkup = new ReplyKeyboardMarkup(true)
-                .AddButton(KeyboardButton.WithRequestLocation("Location"))
-                .AddButton(KeyboardButton.WithRequestContact("Contact"));
-            return await bot.SendMessage(msg.Chat, "Who or Where are you?", replyMarkup: replyMarkup);
-        }
-
-        async Task<Message> StartInlineQuery(Message msg)
-        {
-            var button = InlineKeyboardButton.WithSwitchInlineQueryCurrentChat("Inline Mode");
-            return await bot.SendMessage(msg.Chat, "Press the button to start Inline Query\n\n" +
-                "(Make sure you enabled Inline Mode in @BotFather)", replyMarkup: new InlineKeyboardMarkup(button));
-        }
-
-        async Task<Message> SendPoll(Message msg)
-        {
-            return await bot.SendPoll(msg.Chat, "Question", PollOptions, isAnonymous: false);
-        }
-
-        async Task<Message> SendAnonymousPoll(Message msg)
-        {
-            return await bot.SendPoll(chatId: msg.Chat, "Question", PollOptions);
-        }
-
-        static Task<Message> FailingHandler(Message msg)
-        {
-            throw new NotImplementedException("FailingHandler");
-        }
-
-        // Process Inline Keyboard callback data
-        private async Task OnCallbackQuery(CallbackQuery callbackQuery)
-        {
-            logger.LogInformation("Received inline keyboard callback from: {CallbackQueryId}", callbackQuery.Id);
-            await bot.AnswerCallbackQuery(callbackQuery.Id, $"Received {callbackQuery.Data}");
-            await bot.SendMessage(callbackQuery.Message!.Chat, $"Received {callbackQuery.Data}");
-        }
-
-        #region Inline Mode
-
-        private async Task OnInlineQuery(InlineQuery inlineQuery)
-        {
-            logger.LogInformation("Received inline query from: {InlineQueryFromId}", inlineQuery.From.Id);
-
-            InlineQueryResult[] results = [ // displayed result
-                new InlineQueryResultArticle("1", "Telegram.Bot", new InputTextMessageContent("hello")),
-            new InlineQueryResultArticle("2", "is the best", new InputTextMessageContent("world"))
-            ];
-            await bot.AnswerInlineQuery(inlineQuery.Id, results, cacheTime: 0, isPersonal: true);
-        }
-
-        private async Task OnChosenInlineResult(ChosenInlineResult chosenInlineResult)
-        {
-            logger.LogInformation("Received inline result: {ChosenInlineResultId}", chosenInlineResult.ResultId);
-            await bot.SendMessage(chosenInlineResult.From.Id, $"You chose result with Id: {chosenInlineResult.ResultId}");
-        }
-
-        #endregion
-
-        private Task OnPoll(Poll poll)
-        {
-            logger.LogInformation("Received Poll info: {Question}", poll.Question);
-            return Task.CompletedTask;
-        }
-
-        private async Task OnPollAnswer(PollAnswer pollAnswer)
-        {
-            var answer = pollAnswer.OptionIds.FirstOrDefault();
-            var selectedOption = PollOptions[answer];
-            if (pollAnswer.User != null)
-                await bot.SendMessage(pollAnswer.User.Id, $"You've chosen: {selectedOption.Text} in poll");
+            await bot.SendMessage(msg.Chat, about, parseMode: ParseMode.Html, replyMarkup: keyboard);
         }
 
         private Task UnknownUpdateHandlerAsync(Update update)
